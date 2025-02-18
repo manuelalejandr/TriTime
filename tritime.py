@@ -196,6 +196,36 @@ class TripletLossEuclidean(nn.Module):
 
 
 
+def compute_cv_without_labels(features):
+    # Convertir a numpy array si es necesario
+    if isinstance(features, torch.Tensor):
+        features = features.numpy()
+
+    # Asegúrate de que features es de la forma [n_samples, n_timestamps, 1]
+    features = features.squeeze(axis=2)  # [n_samples, n_timestamps]
+
+    # Inicializar lista de distancias
+    distances = []
+    
+    # Calcular las distancias euclidianas entre todos los pares de series
+    n_samples = features.shape[0]
+    for i in range(n_samples):
+        for j in range(i + 1, n_samples):
+            distance = np.sqrt(np.sum((features[i] - features[j]) ** 2))
+            distances.append(distance)
+
+    # Convertir distancias a un array numpy
+    distances = np.array(distances)
+
+    # Calcular media y desviación estándar de las distancias
+    mean_distance = np.mean(distances) if len(distances) > 0 else 0
+    std_distance = np.std(distances) if len(distances) > 0 else 0
+
+    # Calcular el coeficiente de variación (CV)
+    cv = std_distance / mean_distance if mean_distance != 0 else 0
+    
+    return cv
+
 
 from sklearn.metrics import accuracy_score, recall_score, precision_score, f1_score
 
@@ -205,153 +235,147 @@ all_recall, all_precision, all_f1 = [], [], []
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-best_alpha = 0.1
-best_f1 = 0.0
-
-for alpha in torch.arange(0.1, 1.0, 0.1):
-    print("MODELO CON ALPHA:", alpha)
-    all_recall, all_precision, all_f1 = [], [], []
-    all_accuracy, all_loss = [], []
-    for seed in range(10):
+for seed in range(10):
 
 
-      print("model", seed)
-      print("Starting Training")
-      print("--------------------------------------------------------------------------")
-      set_seed(seed)
+    print("model", seed)
+    print("Starting Training")
+    print("--------------------------------------------------------------------------")
+    set_seed(seed)
 
-      backbone = TimeSeriesConvolution(in_channels=x_train.shape[2], num_class=len(np.unique(y_train)))
+    backbone = TimeSeriesConvolution(in_channels=x_train.shape[2], num_class=len(np.unique(y_train)))
 
 
 
-      backbone.to(device)
+    backbone.to(device)
 
 
-      criterion1 = nn.CrossEntropyLoss()
-      criterion2 = TripletLossEuclidean()
+    criterion1 = nn.CrossEntropyLoss()
+    criterion2 = TripletLossEuclidean()
 
 
-      optimizer = torch.optim.Adam(backbone.parameters())
-      scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
-      factor=0.5, patience=50, threshold=0.0001, min_lr=0.0001)
+    optimizer = torch.optim.Adam(backbone.parameters())
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
+    factor=0.5, patience=50, threshold=0.0001, min_lr=0.0001)
 
 
-      epochs1, epochs2 = 800, 1200
+    epochs1, epochs2 = 800, 1200
 
-      backbone.train()
+    backbone.train()
  
 
-      for epoch in range(epochs1):
-          total_loss = 0
-          total_loss_label = 0
-          total_loss_unlabel = 0
-          for batch in tqdm(dataloader_train):
-            optimizer.zero_grad()
-            x1 = batch[0]
-            y = batch[1]
-            y_fake = batch[2]    
+    for epoch in range(epochs1):
+        total_loss = 0
+        total_loss_label = 0
+        total_loss_unlabel = 0
+        for batch in tqdm(dataloader_train):
+          optimizer.zero_grad()
+          x1 = batch[0]
+          y = batch[1]
+          y_fake = batch[2]    
 
    
-            x = x1.numpy()
+          x = x1.numpy()
         
 
-            x3 = np.flip(x).copy()
+          x3 = np.flip(x).copy()
        
        
+        
 
-            x2 = x + np.random.normal(0, 0.1, size=x.shape)
-       
-            x2 = torch.tensor(x2, dtype=torch.float32).clone().detach()
-            x3 = torch.tensor(x3, dtype=torch.float32).clone().detach()
-
-
-            x1 = x1.to(device)
-            x2 = x2.to(device)
-            x3 = x3.to(device)
-            y_fake = y_fake.to(device)
-
-            y = y.to(device, dtype=torch.long)
+          x3 = x3.clone().detach().float()
        
 
-            anchor, y_pred = backbone(x1)
-            positive, y_pred2 = backbone(x2)
-            negativee, y_pred3 = backbone(x3)
-
-            negative = alpha * anchor + (1-alpha) * negativee
+          x2 = x + np.random.normal(0, 0.1, size=x.shape)
+       
+          x2 = torch.tensor(x2, dtype=torch.float32).clone().detach()
 
 
-            loss =  criterion2(anchor, positive, negative)
-            loss.backward()
-            optimizer.step()
+          x1 = x1.to(device)
+          x2 = x2.to(device)
+          x3 = x3.to(device)
+          y_fake = y_fake.to(device)
+
+          y = y.to(device, dtype=torch.long)
+       
+
+          anchor, y_pred = backbone(x1)
+          positive, y_pred2 = backbone(x2)
+          negative, y_pred3 = backbone(x3)
 
 
-            total_loss += loss.item()
+          loss =  criterion2(anchor, positive, negative)
+          loss.backward()
+          optimizer.step()
 
 
-          avg_loss = total_loss / len(dataloader_train)
-
-          scheduler.step(avg_loss)
-          print(f"epoch: {epoch:>02},loss: {avg_loss}, ")
-
-      for epoch in range(epochs2):
-          total_loss = 0
-          for batch in tqdm(dataloader_train):
-            optimizer.zero_grad()
-            x1 = batch[0]
+          total_loss += loss.item()
 
 
-            y = batch[1]
-            y_fake = batch[2]
+        avg_loss = total_loss / len(dataloader_train)
 
-            x1 = x1.to(device)
-            y_fake = y_fake.to(device)
+        scheduler.step(avg_loss)
+        print(f"epoch: {epoch:>02},loss: {avg_loss}, ")
 
-            y = y.to(device, dtype=torch.long)
+    for epoch in range(epochs2):
+        total_loss = 0
+        for batch in tqdm(dataloader_train):
+          optimizer.zero_grad()
+          x1 = batch[0]
 
-            anchor, y_pred = backbone(x1)
+
+          y = batch[1]
+          y_fake = batch[2]
+
+          x1 = x1.to(device)
+          y_fake = y_fake.to(device)
+
+          y = y.to(device, dtype=torch.long)
+
+          anchor, y_pred = backbone(x1)
 
             # Seleccionar solo los elementos donde y_fake es 1
-            selected_y_pred = y_pred[y_fake == 1]
-            selected_y_true = y[y_fake == 1]
+          selected_y_pred = y_pred[y_fake == 1]
+          selected_y_true = y[y_fake == 1]
 
-            loss = criterion1(selected_y_pred, selected_y_true)
-            loss.backward()
-            optimizer.step()
-
-
-            total_loss += loss.item()
+          loss = criterion1(selected_y_pred, selected_y_true)
+          loss.backward()
+          optimizer.step()
 
 
-          avg_loss = total_loss / len(dataloader_train)
-
-          scheduler.step(avg_loss)
-          print(f"epoch: {epoch:>02},loss: {avg_loss} ")
+          total_loss += loss.item()
 
 
+        avg_loss = total_loss / len(dataloader_train)
 
-      backbone.eval()
-      total_test_loss = 0
-      total_test_acc = 0
-      y_true_test = []
-      y_pred_test = []
-      all_vectors = []
-      all_labels = []
+        scheduler.step(avg_loss)
+        print(f"epoch: {epoch:>02},loss: {avg_loss} ")
 
-      with torch.no_grad():
-        for inputs, labels in dataloader_test:
-          labels = labels.type(torch.LongTensor)
-          inputs, labels = inputs.to(device), labels.to(device)
-          vector, outputs = backbone(inputs)
 
-          predicted = torch.softmax(outputs, dim=1).argmax(dim=1)
 
-          test_acc = accuracy_fn(y_true=labels, y_pred=predicted)
-          total_test_acc += torch.tensor(test_acc).item()
+    backbone.eval()
+    total_test_loss = 0
+    total_test_acc = 0
+    y_true_test = []
+    y_pred_test = []
+    all_vectors = []
+    all_labels = []
 
-          y_true_test.extend(labels.cpu().numpy())
-          y_pred_test.extend(predicted.cpu().numpy())
-          all_vectors.append(vector.cpu())
-          all_labels.append(labels.cpu())
+    with torch.no_grad():
+      for inputs, labels in dataloader_test:
+        labels = labels.type(torch.LongTensor)
+        inputs, labels = inputs.to(device), labels.to(device)
+        vector, outputs = backbone(inputs)
+
+        predicted = torch.softmax(outputs, dim=1).argmax(dim=1)
+
+        test_acc = accuracy_fn(y_true=labels, y_pred=predicted)
+        total_test_acc += torch.tensor(test_acc).item()
+
+        y_true_test.extend(labels.cpu().numpy())
+        y_pred_test.extend(predicted.cpu().numpy())
+        all_vectors.append(vector.cpu())
+        all_labels.append(labels.cpu())
 
       test_accuracy = accuracy_score(y_true_test, y_pred_test)
       test_recall = recall_score(y_true_test, y_pred_test, average="macro")
@@ -370,53 +394,25 @@ for alpha in torch.arange(0.1, 1.0, 0.1):
 
 
 
-    print("all_accuracy promedio: " ,np.mean(np.array(all_accuracy)))
-    print("all_accuracy std: " ,np.std(np.array(all_accuracy)))
+print("all_accuracy promedio: " ,np.mean(np.array(all_accuracy)))
+print("all_accuracy std: " ,np.std(np.array(all_accuracy)))
 
 
 
-    print("all_precision promedio: " ,np.mean(np.array(all_precision)))
-    print("all_precision std: " ,np.std(np.array(all_precision)))
+print("all_precision promedio: " ,np.mean(np.array(all_precision)))
+print("all_precision std: " ,np.std(np.array(all_precision)))
 
 
-    print("all_f1 promedio: " ,np.mean(np.array(all_f1)))
-    print("all_f1 std: " ,np.std(np.array(all_f1)))
+print("all_f1 promedio: " ,np.mean(np.array(all_f1)))
+print("all_f1 std: " ,np.std(np.array(all_f1)))
 
 
-    print("all_recall promedio: " ,np.mean(np.array(all_recall)))
-    print("all_recall sd: " ,np.std(np.array(all_recall)))
-
-
-    if np.mean(np.array(all_f1)) > best_f1:
-      best_f1 = np.mean(np.array(all_f1))
-      std_f1 = np.std(np.array(all_f1))
-
-      best_accuracy = np.mean(np.array(all_accuracy))
-      std_accuracy = np.std(np.array(all_accuracy))
-
-      best_recall = np.mean(np.array(all_recall))
-      std_recall = np.std(np.array(all_recall))
-
-      best_precision = np.mean(np.array(all_precision))
-      std_precision = np.std(np.array(all_precision))
-      best_alpha = alpha.item()
+print("all_recall promedio: " ,np.mean(np.array(all_recall)))
+print("all_recall sd: " ,np.std(np.array(all_recall)))
 
 
 
 
-print(f'Mejor alpha: {best_alpha:.3f}')
 
-print("accuracy promedio: " ,best_accuracy)
-print("accuracy std: " ,std_accuracy)
-
-
-print("precision promedio: " ,best_precision)
-print("precision std: " ,std_precision)
-
-print("f1 promedio: " ,best_f1)
-print("f1 std: " ,std_f1)
-
-print("recall promedio: " ,best_recall)
-print("recall std: " ,std_recall)
 
 print(dataset, porc_unlabel)
